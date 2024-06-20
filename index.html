@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pokémon Maze Adventure</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+            font-family: Arial, sans-serif;
+        }
+
+        .container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            max-width: 90%;
+            height: 100%;
+        }
+
+        h1 {
+            margin-bottom: 10px;
+            font-size: 2em;
+        }
+
+        #gameInfo {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            width: 100%;
+            max-width: 800px;
+            margin-bottom: 10px;
+            font-size: 1em;
+        }
+
+        #levelCounter, #scoreCounter {
+            margin: 0;
+        }
+
+        #pauseButton {
+            padding: 10px;
+            font-size: 1em;
+            cursor: pointer;
+        }
+
+        canvas {
+            border: 2px solid #000;
+            width: 100%;
+            max-width: 800px;
+            height: calc(100% - 50px); /* Adjust to fit within the container */
+            max-height: 500px;
+        }
+    </style>
+
+</head>
+<body>
+    <div class="container">
+        <h1>Pokémon Maze Adventure</h1>
+        <div id="gameInfo">
+            <div id="levelCounter">Level: 1</div>
+            <div id="scoreCounter">Score: 0</div>
+            <button id="pauseButton">Pause</button>
+        </div>
+        <canvas id="gameCanvas" width="800" height="500"></canvas>
+    </div>
+        
+        
+    <script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const levelCounter = document.getElementById('levelCounter');
+const scoreCounter = document.getElementById('scoreCounter');
+const pauseButton = document.getElementById('pauseButton');
+
+let currentLevel = 1;
+let score = 0;
+const totalLevels = 50;
+const tileSize = 50;
+const numRows = canvas.height / tileSize;
+const numCols = canvas.width / tileSize;
+
+let player = { x: 0, y: 0 };
+let exit;
+let roadblocks = [];
+let movingObstacles = [];
+let playerSprite;
+let playerImage = new Image();
+let exitImage;
+let roadblockImage;
+let movingObstacleSprites = [];
+let powerUpImage;
+let moveInterval;
+let collectibles = [];
+let isPaused = false;
+
+const loadImages = async () => {
+    const playerResponse = await fetch(`https://pokeapi.co/api/v2/pokemon/9`);
+    const playerData = await playerResponse.json();
+    playerSprite = playerData.sprites.front_default;
+    playerImage.src = playerSprite;
+
+    exitImage = await loadImage('exit.png');
+    roadblockImage = await loadImage('roadblock.png');
+    powerUpImage = await loadImage('berry.png');
+    const pokemonIds = [25, 133, 6, 4, 22, 12, 33, 94, 150];
+    for (const id of pokemonIds) {
+        const response = await fetch(`https://pokeapi.co/api/v2/pokemon/${id}`);
+        const data = await response.json();
+        movingObstacleSprites.push({ sprite: data.sprites.front_default, type: data.types[0].type.name });
+    }
+};
+
+const loadImage = (src) => {
+    return new Promise((resolve) => {
+        const img = new Image();
+        img.src = src;
+        img.onload = () => resolve(img);
+    });
+};
+
+const generateObstacles = () => {
+    roadblocks = [];
+    movingObstacles = [];
+    let numRoadblocks = Math.min(5 + Math.floor(currentLevel / 2), numCols * numRows / 5);
+    let numMovingObstacles = currentLevel >= 5 ? Math.min(1 + Math.floor((currentLevel - 5) / 2), numCols * numRows / 10) : 0;
+
+    while (roadblocks.length < numRoadblocks) {
+        const obstacleX = Math.floor(Math.random() * numCols);
+        const obstacleY = Math.floor(Math.random() * numRows);
+
+        if ((obstacleX !== player.x || obstacleY !== player.y) &&
+            (obstacleX !== exit.x || obstacleY !== exit.y)) {
+            if (!roadblocks.some(obstacle => obstacle.x === obstacleX && obstacle.y === obstacleY)) {
+                roadblocks.push({ x: obstacleX, y: obstacleY });
+            }
+        }
+    }
+
+    if (currentLevel >= 5) {
+        while (movingObstacles.length < numMovingObstacles) {
+            const obstacleX = Math.floor(Math.random() * numCols);
+            const obstacleY = Math.floor(Math.random() * numRows);
+            const path = Math.random() > 0.5 ? 'horizontal' : 'vertical';
+            const spriteData = movingObstacleSprites[Math.floor(Math.random() * movingObstacleSprites.length)];
+
+            if ((obstacleX !== player.x || obstacleY !== player.y) &&
+                (obstacleX !== exit.x || obstacleY !== exit.y)) {
+                if (!roadblocks.some(obstacle => obstacle.x === obstacleX && obstacle.y === obstacleY) &&
+                    !movingObstacles.some(obstacle => obstacle.x === obstacleX && obstacle.y === obstacleY) &&
+                    !doesMovingObstaclePassThroughCriticalTiles(obstacleX, obstacleY, path)) {
+                    movingObstacles.push({ x: obstacleX, y: obstacleY, path, step: 1, sprite: spriteData.sprite, type: spriteData.type });
+                }
+            }
+        }
+    }
+};
+
+const doesMovingObstaclePassThroughCriticalTiles = (x, y, path) => {
+    if (path === 'horizontal') {
+        for (let i = -numCols; i <= numCols; i++) {
+            if ((x + i === exit.x && y === exit.y) || (x + i === player.x && y === player.y)) return true;
+        }
+    } else {
+        for (let i = -numRows; i <= numRows; i++) {
+            if (x === exit.x && y + i === exit.y || x === player.x && y + i === player.y) return true;
+        }
+    }
+    return false;
+};
+
+const drawGrid = () => {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    for (let i = 0; i < numCols; i++) {
+        for (let j = 0; j < numRows; j++) {
+            ctx.strokeStyle = '#ccc';
+            ctx.strokeRect(i * tileSize, j * tileSize, tileSize, tileSize);
+        }
+    }
+};
+
+const drawPlayer = () => {
+    ctx.drawImage(playerImage, player.x * tileSize, player.y * tileSize, tileSize, tileSize);
+};
+
+const drawExit = () => {
+    ctx.drawImage(exitImage, exit.x * tileSize, exit.y * tileSize, tileSize, tileSize);
+};
+
+const drawObstacles = () => {
+    roadblocks.forEach(obstacle => {
+        ctx.drawImage(roadblockImage, obstacle.x * tileSize, obstacle.y * tileSize, tileSize, tileSize);
+    });
+};
+
+const drawMovingObstacles = () => {
+    movingObstacles.forEach(obstacle => {
+        const img = new Image();
+        img.src = obstacle.sprite;
+        ctx.drawImage(img, obstacle.x * tileSize, obstacle.y * tileSize, tileSize, tileSize);
+    });
+};
+
+const drawCollectibles = () => {
+    collectibles.forEach(collectible => {
+        const x = collectible.x * tileSize + (tileSize - tileSize / 2) / 2;
+        const y = collectible.y * tileSize + (tileSize - tileSize / 2) / 2;
+        ctx.drawImage(powerUpImage, x, y, tileSize / 2, tileSize / 2);
+    });
+};
+
+const generateCollectibles = () => {
+    if (currentLevel < 3) return;
+    collectibles = [];
+    let numCollectibles = Math.min(3, numCols * numRows / 20);
+    while (collectibles.length < numCollectibles) {
+        const collectibleX = Math.floor(Math.random() * numCols);
+        const collectibleY = Math.floor(Math.random() * numRows);
+        if ((collectibleX !== player.x || collectibleY !== player.y) &&
+            (collectibleX !== exit.x || collectibleY !== exit.y)) {
+            if (!roadblocks.some(obstacle => obstacle.x === collectibleX && obstacle.y === collectibleY) &&
+                !movingObstacles.some(obstacle => obstacle.x === collectibleX && obstacle.y === collectibleY)) {
+                collectibles.push({ x: collectibleX, y: collectibleY });
+            }
+        }
+    }
+};
+
+const movePlayer = (dx, dy) => {
+    if (isPaused) return;
+
+    const newX = player.x + dx;
+    const newY = player.y + dy;
+
+    if (newX < 0 || newX >= numCols || newY < 0 || newY >= numRows) return;
+
+    if (!roadblocks.some(obstacle => obstacle.x === newX && obstacle.y === newY)) {
+        player.x = newX;
+        player.y = newY;
+    }
+
+    if (player.x === exit.x && player.y === exit.y) {
+        currentLevel++;
+        score += 100;
+        levelCounter.textContent = `Level: ${currentLevel}`;
+        scoreCounter.textContent = `Score: ${score}`;
+        if (currentLevel <= totalLevels) {
+            startLevel();
+        } else {
+            alert('You win!');
+        }
+    }
+
+    collectibles = collectibles.filter(collectible => {
+        if (collectible.x === player.x && collectible.y === player.y) {
+            score += 10;
+            scoreCounter.textContent = `Score: ${score}`;
+            return false;
+        }
+        return true;
+    });
+
+    drawGame();
+};
+
+const moveObstacles = () => {
+    movingObstacles.forEach(obstacle => {
+        if (obstacle.path === 'horizontal') {
+            obstacle.x += obstacle.step;
+            if (obstacle.x >= numCols || obstacle.x < 0 || roadblocks.some(block => block.x === obstacle.x && block.y === obstacle.y)) {
+                obstacle.step *= -1;
+                obstacle.x += obstacle.step;
+            }
+        } else {
+            obstacle.y += obstacle.step;
+            if (obstacle.y >= numRows || obstacle.y < 0 || roadblocks.some(block => block.x === obstacle.x && block.y === obstacle.y)) {
+                obstacle.step *= -1;
+                obstacle.y += obstacle.step;
+            }
+        }
+
+        if (obstacle.type === 'ghost' && roadblocks.some(block => block.x === obstacle.x && block.y === obstacle.y)) {
+            // Ghost Pokémon can pass through roadblocks
+            if (obstacle.path === 'horizontal') {
+                obstacle.x -= obstacle.step;
+                obstacle.step *= -1;
+            } else {
+                obstacle.y -= obstacle.step;
+                obstacle.step *= -1;
+            }
+        }
+
+        // if (obstacle.type === 'psychic') {
+        //     if (Math.abs(obstacle.x - player.x) <= 3 || Math.abs(obstacle.y - player.y) <= 3) {
+        //         alert('Paused by Psychic Pokémon');
+        //         isPaused = true;
+        //         setTimeout(() => {
+        //             isPaused = false;
+        //             pauseButton.textContent = 'Pause';
+        //         }, 3000); // Pauses for 3 seconds
+        //     }
+        // }
+
+        if (obstacle.x === player.x && obstacle.y === player.y) {
+            alert('Game Over');
+            resetGame();
+        }
+    });
+    drawGame();
+};
+
+const drawGame = () => {
+    drawGrid();
+    drawPlayer();
+    drawExit();
+    drawObstacles();
+    drawMovingObstacles();
+    drawCollectibles();
+};
+
+const startLevel = () => {
+    player.x = 0;
+    player.y = 0;
+    exit = { x: numCols - 1, y: numRows - 1 };
+    generateObstacles();
+    generateCollectibles();
+    clearInterval(moveInterval);
+    if (currentLevel >= 5) {
+        moveInterval = setInterval(moveObstacles, 500);
+    }
+    drawGame();
+};
+
+const resetGame = () => {
+    currentLevel = 1;
+    score = 0;
+    levelCounter.textContent = `Level: ${currentLevel}`;
+    scoreCounter.textContent = `Score: ${score}`;
+    startLevel();
+};
+
+pauseButton.addEventListener('click', () => {
+    isPaused = !isPaused;
+    pauseButton.textContent = isPaused ? 'Resume' : 'Pause';
+});
+
+document.addEventListener('keydown', (event) => {
+    if (isPaused) return;
+
+    switch (event.key) {
+        case 'ArrowUp':
+            movePlayer(0, -1);
+            break;
+        case 'ArrowDown':
+            movePlayer(0, 1);
+            break;
+        case 'ArrowLeft':
+            movePlayer(-1, 0);
+            break;
+        case 'ArrowRight':
+            movePlayer(1, 0);
+            break;
+    }
+});
+
+// Swipe controls for mobile devices
+let touchStartX = null;
+let touchStartY = null;
+
+document.addEventListener('touchstart', (event) => {
+    const touch = event.touches[0];
+    touchStartX = touch.clientX;
+    touchStartY = touch.clientY;
+});
+
+document.addEventListener('touchend', (event) => {
+    if (touchStartX === null || touchStartY === null) return;
+
+    const touchEndX = event.changedTouches[0].clientX;
+    const touchEndY = event.changedTouches[0].clientY;
+
+    const deltaX = touchEndX - touchStartX;
+    const deltaY = touchEndY - touchStartY;
+
+    if (Math.abs(deltaX) > Math.abs(deltaY)) {
+        if (deltaX > 0) movePlayer(1, 0); // Swipe right
+        else movePlayer(-1, 0); // Swipe left
+    } else {
+        if (deltaY > 0) movePlayer(0, 1); // Swipe down
+        else movePlayer(0, -1); // Swipe up
+    }
+
+    touchStartX = null;
+    touchStartY = null;
+});
+
+window.onload = async () => {
+    await loadImages();
+    startLevel();
+};
+
+    </script>
+</body>
+</html>
